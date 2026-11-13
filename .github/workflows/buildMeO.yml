@@ -3,8 +3,6 @@ name: Recompile & Sign APK
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
 
 jobs:
   build:
@@ -83,27 +81,86 @@ jobs:
           fi
           PROJECT_DIR=$(dirname "$CFG")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "---- apktool.json (প্রথম 3000 অক্ষর) ----"
+          head -c 3000 "$PROJECT_DIR/apktool.json"; echo
+          echo "------------------------------------------"
+
           APKTOOL_VER=$(java -jar apktool.jar --version | tr -d '\r')
           python3 - "$PROJECT_DIR" "$APKTOOL_VER" <<'PY'
           import json, sys, os
+
           pd, ver = sys.argv[1], sys.argv[2]
-          d = json.load(open(os.path.join(pd, "apktool.json")))
-          s, v = d.get("sdkInfo", {}), d.get("VersionInfo", {})
-          o = [
-            "version: " + ver,
-            "apkFileName: app.apk",
-            "isFrameworkApk: false",
-            "usesFramework:\n  ids:\n  - 1",
-            "packageInfo:\n  forcedPackageId: 127",
-            "sdkInfo:\n  minSdkVersion: %s\n  targetSdkVersion: %s" % (s.get("minSdkVersion", "21"), s.get("targetSdkVersion", "34")),
-            "versionInfo:\n  versionCode: %s\n  versionName: %s" % (v.get("versionCode", "1"), v.get("versionName", "1.0")),
-            "resourcesAreCompressed: false",
-            "sharedLibrary: false",
-            "sparseResources: " + str(d.get("sparseResources", False)).lower(),
-            "doNotCompress:\n" + "\n".join("- " + str(x) for x in d.get("doNotCompress", [])),
-            "unknownFiles:\n" + "\n".join("  %s: %s" % (k, x) for k, x in d.get("unknownFiles", {}).items()),
-          ]
+          d = json.load(open(os.path.join(pd, "apktool.json"))) or {}
+
+          def dct(x):
+              return x if isinstance(x, dict) else {}
+
+          def lst(x):
+              return x if isinstance(x, list) else []
+
+          def pick(src, *keys, default=None):
+              # প্রথম যে key-র মান None নয় সেটা নেয়
+              for k in keys:
+                  if isinstance(src, dict) and src.get(k) is not None:
+                      return src[k]
+              return default
+
+          def b(x):
+              if isinstance(x, str):
+                  return x.strip().lower() == "true"
+              return str(bool(x)).lower() == "true"
+
+          s   = dct(d.get("sdkInfo"))
+          v   = dct(pick(d, "versionInfo", "VersionInfo", default={}))
+          pkg = dct(d.get("packageInfo"))
+          uf  = dct(d.get("usesFramework"))
+
+          fw_ids = lst(uf.get("ids")) or [1]
+          fw_tag = uf.get("tag")
+
+          o = []
+          o.append("version: " + ver)
+          o.append("apkFileName: " + str(pick(d, "apkFileName", default="app.apk")))
+          o.append("isFrameworkApk: " + str(b(pick(d, "isFrameworkApk", default=False))).lower())
+
+          o.append("usesFramework:")
+          o.append("  ids:")
+          o += ["  - " + str(i) for i in fw_ids]
+          if fw_tag:
+              o.append("  tag: " + str(fw_tag))
+
+          o.append("packageInfo:")
+          o.append("  forcedPackageId: " + str(pick(pkg, "forcedPackageId", default=127)))
+          rmp = pkg.get("renameManifestPackage")
+          if rmp:
+              o.append("  renameManifestPackage: " + str(rmp))
+
+          o.append("sdkInfo:")
+          o.append("  minSdkVersion: " + str(pick(s, "minSdkVersion", default=21)))
+          o.append("  targetSdkVersion: " + str(pick(s, "targetSdkVersion", default=34)))
+          if s.get("maxSdkVersion") is not None:
+              o.append("  maxSdkVersion: " + str(s["maxSdkVersion"]))
+
+          o.append("versionInfo:")
+          o.append("  versionCode: " + str(pick(v, "versionCode", default=1)))
+          o.append("  versionName: " + str(pick(v, "versionName", default="1.0")))
+
+          o.append("resourcesAreCompressed: " + str(b(pick(d, "resourcesAreCompressed", default=False))).lower())
+          o.append("sharedLibrary: " + str(b(pick(d, "sharedLibrary", default=False))).lower())
+          o.append("sparseResources: " + str(b(pick(d, "sparseResources", default=False))).lower())
+
+          dnc = lst(d.get("doNotCompress"))
+          o.append("doNotCompress:")
+          o += ["- " + str(x) for x in dnc]
+
+          unk = dct(d.get("unknownFiles"))
+          o.append("unknownFiles:")
+          o += ["  %s: %s" % (k, x) for k, x in unk.items()]
+
           open(os.path.join(pd, "apktool.yml"), "w").write("\n".join(o) + "\n")
+          print("---- generated apktool.yml ----")
+          print("\n".join(o))
           PY
 
       - name: Recompile
